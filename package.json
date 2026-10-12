@@ -1,0 +1,26 @@
+{
+  "name": "node-memory-leak",
+  "version": "1.0.0",
+  "description": "Express.js SSE memory leak reproduction and resolution with V8 heap snapshots",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node --expose-gc src/index.js",
+    "test:load": "node scripts/load-test.js",
+    "test": "node --test tests/verification.test.js"
+  },
+  "keywords": [
+    "nodejs",
+    "express",
+    "memory-leak",
+    "v8",
+    "heap-snapshot",
+    "sse",
+    "profiling"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
