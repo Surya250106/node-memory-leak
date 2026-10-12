@@ -1,0 +1,20 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: node-memory-leak-app:latest
+    container_name: node-memory-leak-app
+    ports:
+      - "3000:3000"
+    environment:
+      - PORT=3000
+    volumes:
+      - ./snapshots:/app/snapshots
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/_debug/metrics"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
