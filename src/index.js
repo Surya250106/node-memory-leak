@@ -12,7 +12,7 @@ const SNAPSHOTS_DIR = path.resolve(__dirname, '..', 'snapshots');
 export const app = express();
 export const globalEventBus = new EventEmitter();
 
-// Allow thousands of listeners for stress testing without Node maxListener warnings
+// Allow high listener concurrency under load
 globalEventBus.setMaxListeners(0);
 
 app.use(express.json());
@@ -21,15 +21,19 @@ app.use(express.json());
  * GET /api/events/subscribe
  * Server-Sent Events endpoint
  * 
- * BUGGY IMPLEMENTATION:
- * The listener attached to globalEventBus closes over `res`, but is NEVER removed
- * when the client disconnects or the response closes.
- * This retains the HTTP response object, underlying socket, and buffers indefinitely.
+ * FIXED IMPLEMENTATION:
+ * - Uses a named callback `handler`
+ * - Registers it with `globalEventBus.on('broadcast', handler)`
+ * - Registers cleanup on the HTTP response's `close` event
+ * - Removes the exact callback reference using `globalEventBus.removeListener('broadcast', handler)`
+ * - Cleanup is safe to execute only once (boolean guard)
+ * - Correctly handles abrupt client disconnects
+ * - Preserves SSE functionality
  */
 app.get('/api/events/subscribe', (req, res) => {
   const clientId = req.query.clientId || `client-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
-  // Required SSE headers
+  // Set required SSE headers
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -38,16 +42,28 @@ app.get('/api/events/subscribe', (req, res) => {
   // Send initial connection event
   res.write(`data: ${JSON.stringify({ type: 'connected', clientId, timestamp: Date.now() })}\n\n`);
 
-  // LEAK: Anonymous listener closes over `res` and is never cleaned up on close
-  globalEventBus.on('broadcast', (data) => {
+  // Named event handler
+  const handler = (data) => {
     try {
       res.write(`data: ${JSON.stringify(data)}\n\n`);
     } catch {
-      // In leaky state, res might be closed or errored, yet listener remains attached
+      // In case write is attempted while socket is tearing down
     }
-  });
+  };
 
-  // Notice: No cleanup on res.on('close', ...) here!
+  // Register the named handler on the global bus
+  globalEventBus.on('broadcast', handler);
+
+  // Idempotent cleanup to prevent duplicate listener removal and retain zero references
+  let isCleanedUp = false;
+  const cleanup = () => {
+    if (isCleanedUp) return;
+    isCleanedUp = true;
+    globalEventBus.removeListener('broadcast', handler);
+  };
+
+  // Handle client disconnect or socket termination
+  res.on('close', cleanup);
 });
 
 /**
@@ -73,7 +89,7 @@ app.get('/_debug/metrics', (req, res) => {
  */
 app.post('/_debug/snapshot', (req, res) => {
   try {
-    // Force garbage collection if V8 expose-gc flag is active
+    // Force garbage collection before snapshot if exposed
     if (typeof global.gc === 'function') {
       global.gc();
     }
@@ -106,10 +122,10 @@ app.post('/_debug/snapshot', (req, res) => {
 
 /**
  * POST /_debug/broadcast
- * Helper endpoint to emit a broadcast event for testing SSE distribution
+ * Emits broadcast event for test and live verification
  */
 app.post('/_debug/broadcast', (req, res) => {
-  const payload = req.body || { message: 'test', timestamp: Date.now() };
+  const payload = req.body || { message: 'broadcast', timestamp: Date.now() };
   globalEventBus.emit('broadcast', payload);
   res.status(200).json({
     status: 'ok',
@@ -121,8 +137,12 @@ const PORT = parseInt(process.env.PORT || '3000', 10);
 const HOST = '0.0.0.0';
 
 export let server = null;
-if (process.env.NODE_ENV !== 'test_manual') {
-  server = app.listen(PORT, HOST, () => {
-    console.log(`[Express SSE Server (BUGGY)] Listening on http://${HOST}:${PORT}`);
-  });
+const isDirectRun = !process.argv[1] || process.argv[1].endsWith('index.js');
+
+if (process.env.NODE_ENV !== 'test' || isDirectRun) {
+  if (isDirectRun) {
+    server = app.listen(PORT, HOST, () => {
+      console.log(`[Express SSE Server] Listening on http://${HOST}:${PORT}`);
+    });
+  }
 }
